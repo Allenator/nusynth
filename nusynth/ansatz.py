@@ -133,7 +133,7 @@ class QGAN_3Q(CircuitAnsatz):
 class Squander(Ansatz):
     def __init__(
         self, n_qubits,
-        optimize_layer_num=False,
+        n_layers_dict=s.default_n_layers_dict,
         initial_guess='zeros',
         tolerance=1e-12,
         param_max=2 * np.pi,
@@ -141,15 +141,18 @@ class Squander(Ansatz):
         max_n_retries=10,
         verbose=False
     ):
-        assert n_qubits in [2, 3, 4] # 1 causes kernel to crash, 5 is too long
         self.n_qubits = n_qubits
-        self.optimize_layer_num = optimize_layer_num
+        self.n_layers_dict = s.default_n_layers_dict | n_layers_dict
         self.initial_guess = initial_guess
         self.tolerance = tolerance
         self.param_max = param_max
         self.param_min = param_min
         self.max_n_retries = max_n_retries
         self.verbose = verbose
+
+        s.assert_n_qubits(self.n_qubits)
+        s.assert_n_layers_dict(self.n_qubits, self.n_layers_dict)
+
         super().__init__()
 
 
@@ -163,19 +166,19 @@ class Squander(Ansatz):
 
     @property
     def dims_output(self):
-        return s.n_params(self.n_qubits)
+        return s.n_params(self.n_qubits, self.n_layers_dict)
 
 
     def forward(self, input, normalize=False, return_circuit=False, **kwargs):
         uni = u.vec_to_unitary(input)
         qc = s.decompose(
             uni,
-            optimize_layer_num=self.optimize_layer_num,
+            n_layers_dict=self.n_layers_dict,
             initial_guess=self.initial_guess,
             tolerance=self.tolerance,
             verbose=self.verbose
         )
-        res = s.postprocess(qc, normalize=normalize)
+        res = s.extract_params(qc, self.n_layers_dict, normalize=normalize)
 
         if return_circuit:
             return res, qc
