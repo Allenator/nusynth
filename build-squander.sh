@@ -15,4 +15,4 @@ export TBB_LIB_DIR="/usr/lib"
 export TBB_INC_DIR="/usr/include/tbb/"
 
 python3 setup.py bdist_wheel
-pip3 install dist/qgd-*.whl
+# pip3 install dist/qgd-*.whl

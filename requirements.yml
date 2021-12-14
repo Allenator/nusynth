@@ -7,10 +7,12 @@ dependencies:
   - joblib
   - jupyter
   - matplotlib
+  - pandas
   - pip
   - plotly
   - python=3
   - scikit-build
+  - scikit-learn
   - tbb-devel
   - tensorflow-gpu
   - tqdm
