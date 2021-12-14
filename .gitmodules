@@ -1,0 +1,3 @@
+[submodule "sequential-quantum-gate-decomposer"]
+	path = sequential-quantum-gate-decomposer
+	url = git@github.com:rakytap/sequential-quantum-gate-decomposer.git

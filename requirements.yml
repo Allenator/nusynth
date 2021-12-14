@@ -1,0 +1,20 @@
+name: nusynth
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - gxx_linux-64=11
+  - joblib
+  - jupyter
+  - matplotlib
+  - pip
+  - plotly
+  - python=3
+  - scikit-build
+  - tbb-devel
+  - tensorflow-gpu
+  - tqdm
+  - pip:
+    - kaleido
+    - pylatexenc
+    - qiskit
