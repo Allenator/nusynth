@@ -10,7 +10,7 @@ dependencies:
   - pandas
   - pip
   - plotly
-  - python=3
+  - python=3.9
   - scikit-build
   - scikit-learn
   - tbb-devel
