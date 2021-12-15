@@ -4,8 +4,6 @@ import math
 import joblib
 import numpy as np
 from qiskit import Aer
-from qiskit.quantum_info import process_fidelity
-from qiskit.quantum_info.operators import Operator
 from scipy.stats import unitary_group
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
@@ -59,10 +57,6 @@ def vec_to_unitary(vec):
 def circuit_to_unitary(circuit):
     res = Aer.get_backend('unitary_simulator').run(circuit).result()
     return res.get_unitary(circuit)
-
-
-def fidelity(source, target):
-    return process_fidelity(Operator(source), target=Operator(target))
 
 
 def pca(main, aux_list, n_components=2):

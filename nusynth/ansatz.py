@@ -6,16 +6,49 @@ from tqdm.notebook import tqdm
 from typing import Iterable
 
 import nusynth.circuit as c
+import nusynth.metric as m
 import nusynth.squander as s
 import nusynth.utils as u
 
 
 class Ansatz(ABC):
-    def __call__(self, samples, **kwargs):
-        return self.validate_forward(samples, **kwargs)
-
-
     native_parallel = False
+
+    inverse_cls = None
+    fidelity_metric = lambda a, b: np.all(a == b).astype(float)
+
+
+    def __init__(self, *args, **kwargs):
+        self._init_inverse(*args, **kwargs)
+
+
+    def __call__(self, input, **kwargs):
+        return self.validate_forward(input, **kwargs)
+
+
+    def __str__(self) -> str:
+        ret = f'{self.__class__.__name__}: ' + \
+            f'({self.dims_input}) → ({self.dims_output})'
+
+        return ret
+
+
+    def _init_inverse(self, *inverse_init_args, **inverse_init_kwargs):
+        if self.inverse_cls is not None:
+            self.inverse = self.inverse_cls(
+                *inverse_init_args, **inverse_init_kwargs
+            )
+
+
+    @classmethod
+    def get_fidelity(cls, source, target):
+        return cls.fidelity_metric(source, target)
+
+
+    def validate_fidelity(self, input, output, **kwargs):
+        ret = self.inverse(output, **kwargs)
+
+        return self.get_fidelity(input, ret)
 
 
     @property
@@ -28,13 +61,6 @@ class Ansatz(ABC):
     @abstractmethod
     def dims_output(self) -> int:
         ...
-
-
-    def __str__(self) -> str:
-        ret = f'{self.__class__.__name__}: ' + \
-            f'({self.dims_input}) -> ({self.dims_output})'
-
-        return ret
 
 
     @property
@@ -70,8 +96,18 @@ class Ansatz(ABC):
             )
 
 
+    def is_invalid_input(self, input):
+        return np.any(np.isnan(input))
+
+
     def validate_forward(self, input, **kwargs):
         self._validate_dims_input(input)
+
+        if self.is_invalid_input(input):
+            err_ret = np.empty(self.dims_output)
+            err_ret[:] = np.nan
+
+            return err_ret
 
         output = self.forward(input, **kwargs)
         output = self.postprocess(input, output, **kwargs)
@@ -90,6 +126,25 @@ class Ansatz(ABC):
             )
 
         return np.array(output_arr)
+
+
+class Identity(Ansatz):
+    def __init__(self, dims):
+        self.dims = dims
+
+
+    @property
+    def dims_input(self):
+        return self.dims
+
+
+    @property
+    def dims_output(self):
+        return self.dims
+
+
+    def forward(self, input, **kwargs):
+        return input
 
 
 class Layers(Ansatz):
@@ -114,10 +169,17 @@ class Layers(Ansatz):
 
         self.ansatz_list = ansatz_list
 
+        # TODO: automatically compute inverse for layered models
+        super().__init__()
+
+
+    def __getitem__(self, index):
+        return self.ansatz_list[index]
+
 
     def _short_str(self):
         return f'{self.__class__.__name__} ({self.n_layers}): ' + \
-            f'({self.dims_input}) -> ({self.dims_output})'
+            f'({self.dims_input}) → ({self.dims_output})'
 
 
     def __str__(self):
@@ -168,19 +230,14 @@ class Layers(Ansatz):
 
 
     def validate_forward(self, input, kwargs_dict={}):
-        self._validate_dims_input(input)
-
         output = input
         for i, a in enumerate(self.ansatz_list):
-            output = a.forward(output, **kwargs_dict.get(i, {}))
-            output = a.postprocess(input, output, **kwargs_dict.get(i, {}))
-
-        self._validate_dims_output(output)
+            output = a.validate_forward(output, **kwargs_dict.get(i, {}))
 
         return output
 
 
-    def map(self, input_arr, kwargs_dict={}):
+    def map_sequential(self, input_arr, kwargs_dict={}):
         with u.tqdm_joblib(tqdm(
                 desc=f'{self._short_str()}', total=len(input_arr)
             )):
@@ -200,6 +257,10 @@ class Layers(Ansatz):
             output_arr = a.map(output_arr, **kwargs_dict.get(i, {}))
 
         return output_arr
+
+
+    def map(self, input_arr, kwargs_dict={}):
+        return self.map_batch(input_arr, kwargs_dict=kwargs_dict)
 
 
 class CircuitAnsatz(Ansatz):
@@ -255,12 +316,28 @@ class QGAN_3Q(CircuitAnsatz):
         )
 
 
+class SquanderReconstruct(CircuitAnsatz):
+    def __init__(self, n_qubits, n_layers_dict=s.default_n_layers_dict):
+        self.n_layers_dict = s.default_n_layers_dict | n_layers_dict
+        super().__init__(
+            n_qubits, s.n_params(n_qubits, self.n_layers_dict),
+            lambda input: c.squander(input, n_qubits, self.n_layers_dict)
+        )
+
+
 class SquanderDecompose(Ansatz):
+    native_parallel=True
+
+    inverse_cls = SquanderReconstruct
+    fidelity_metric = m.process_fidelity_vec
+
+
     def __init__(
         self, n_qubits,
         n_layers_dict=s.default_n_layers_dict,
         initial_guess='zeros',
         tolerance=1e-12,
+        fidelity_threshold=0.99,
         param_max=2 * np.pi,
         param_min=0,
         max_n_retries=10,
@@ -270,6 +347,7 @@ class SquanderDecompose(Ansatz):
         self.n_layers_dict = s.default_n_layers_dict | n_layers_dict
         self.initial_guess = initial_guess
         self.tolerance = tolerance
+        self.fidelity_threshold = fidelity_threshold
         self.param_max = param_max
         self.param_min = param_min
         self.max_n_retries = max_n_retries
@@ -278,10 +356,7 @@ class SquanderDecompose(Ansatz):
         s.assert_n_qubits(self.n_qubits)
         s.assert_n_layers_dict(self.n_qubits, self.n_layers_dict)
 
-        super().__init__()
-
-
-    native_parallel=True
+        super().__init__(self.n_qubits, self.n_layers_dict)
 
 
     @property
@@ -319,7 +394,8 @@ class SquanderDecompose(Ansatz):
 
         if np.any(np.isnan(output)) \
             or output.max() > self.param_max \
-            or output.min() < self.param_min:
+            or output.min() < self.param_min \
+            or self.validate_fidelity(input, output) < self.fidelity_threshold:
 
             if n_retries < self.max_n_retries:
                 kwargs['n_retries'] = n_retries + 1
@@ -330,12 +406,3 @@ class SquanderDecompose(Ansatz):
                 return err_ret
         else:
             return output
-
-
-class SquanderReconstruct(CircuitAnsatz):
-    def __init__(self, n_qubits, n_layers_dict=s.default_n_layers_dict):
-        self.n_layers_dict = s.default_n_layers_dict | n_layers_dict
-        super().__init__(
-            n_qubits, s.n_params(n_qubits, self.n_layers_dict),
-            lambda input: c.squander(input, n_qubits, self.n_layers_dict)
-        )
