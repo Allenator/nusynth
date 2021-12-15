@@ -30,6 +30,13 @@ class Ansatz(ABC):
         ...
 
 
+    def __str__(self) -> str:
+        ret = f'{self.__class__.__name__}: ' + \
+            f'({self.dims_input}) -> ({self.dims_output})'
+
+        return ret
+
+
     @property
     def parallel_n_jobs(self) -> int:
         if self.native_parallel:
@@ -47,40 +54,158 @@ class Ansatz(ABC):
         return output
 
 
-    def validate_forward(self, input, **kwargs):
+    def _validate_dims_input(self, input):
         if len(input) != self.dims_input:
             raise ValueError(
                 f'Input of length {len(input)} does not match '
                 f'the specified length of {self.dims_input}'
             )
 
-        output = self.forward(input, **kwargs)
-        output = self.postprocess(input, output, **kwargs)
 
+    def _validate_dims_output(self, output):
         if len(output) != self.dims_output: # type: ignore
             raise ValueError(
                 f'Output of length {len(output)} does not match ' # type: ignore
                 f'the specified length of {self.dims_output}'
             )
 
+
+    def validate_forward(self, input, **kwargs):
+        self._validate_dims_input(input)
+
+        output = self.forward(input, **kwargs)
+        output = self.postprocess(input, output, **kwargs)
+
+        self._validate_dims_output(output)
+
         return output
 
 
-    def map(self, samples, **kwargs):
+    def map(self, input_arr, **kwargs):
         with u.tqdm_joblib(tqdm(
-                desc=f'{self.__class__.__name__}', total=len(samples)
+                desc=f'{self.__str__()}', total=len(input_arr)
             )):
-            results = Parallel(n_jobs=self.parallel_n_jobs)(
-                delayed(self.validate_forward)(i, **kwargs) for i in samples
+            output_arr = Parallel(n_jobs=self.parallel_n_jobs)(
+                delayed(self.validate_forward)(i, **kwargs) for i in input_arr
             )
 
-        return np.array(results)
+        return np.array(output_arr)
+
+
+class Layers(Ansatz):
+    def __init__(self, ansatz_list):
+        if not ansatz_list:
+            return ValueError('List of ansaetze is empty')
+
+        # dimensionality check
+        do_prev = ansatz_list[0].dims_output
+        for i_prev, a in enumerate(ansatz_list[1:]):
+            di = a.dims_input
+            do = a.dims_output
+            if di != do_prev:
+                a_prev = ansatz_list[i_prev]
+                raise ValueError(
+                    f'Mismatch between output dimension {do_prev} '
+                    f'of {a_prev.__class__.__name__} (index {i_prev}) '
+                    f'and input dimension {di} '
+                    f'of {a.__class__.__name__} (index {i_prev + 1})'
+                )
+            do_prev = do
+
+        self.ansatz_list = ansatz_list
+
+
+    def _short_str(self):
+        return f'{self.__class__.__name__} ({self.n_layers}): ' + \
+            f'({self.dims_input}) -> ({self.dims_output})'
+
+
+    def __str__(self):
+        ret = self._short_str()
+        ret += '\n└ ' + '\n└ '.join(
+            [f'{str(i)}: {a.__str__()}' for i, a in enumerate(self.ansatz_list)]
+        )
+
+        return ret
+
+
+    @property
+    def dims_input(self):
+        return self.ansatz_list[0].dims_input
+
+
+    @property
+    def dims_output(self):
+        return self.ansatz_list[-1].dims_output
+
+
+    @property
+    def n_layers(self):
+        return len(self.ansatz_list)
+
+
+    @property
+    def native_parallel(self):
+        for a in self.ansatz_list:
+            if a.native_parallel:
+                return True
+        return False
+
+
+    def forward(self, input, kwargs_dict={}):
+        output = input
+        for i, a in enumerate(self.ansatz_list):
+            output = a.forward(output, **kwargs_dict.get(i, {}))
+
+        return output
+
+
+    def postprocess(self, input, output, kwargs_dict={}):
+        return NotImplementedError(
+            'Method "postprocess" cannot be directly called for layered models. '
+            'Use "validate_forward" instead'
+        )
+
+
+    def validate_forward(self, input, kwargs_dict={}):
+        self._validate_dims_input(input)
+
+        output = input
+        for i, a in enumerate(self.ansatz_list):
+            output = a.forward(output, **kwargs_dict.get(i, {}))
+            output = a.postprocess(input, output, **kwargs_dict.get(i, {}))
+
+        self._validate_dims_output(output)
+
+        return output
+
+
+    def map(self, input_arr, kwargs_dict={}):
+        with u.tqdm_joblib(tqdm(
+                desc=f'{self._short_str()}', total=len(input_arr)
+            )):
+            output_arr = Parallel(n_jobs=self.parallel_n_jobs)(
+                delayed(self.validate_forward)(i, kwargs_dict=kwargs_dict)
+                for i in input_arr
+            )
+
+        return np.array(output_arr)
+
+
+    def map_batch(self, input_arr, kwargs_dict={}):
+        output_arr = input_arr
+        for i, a in enumerate(tqdm(
+            self.ansatz_list, desc=f'{self._short_str()}', unit='layer'
+        )):
+            output_arr = a.map(output_arr, **kwargs_dict.get(i, {}))
+
+        return output_arr
 
 
 class CircuitAnsatz(Ansatz):
-    def __init__(self, dims_input, dims_output, circuit_constructor):
+    def __init__(self, n_qubits, dims_input, circuit_constructor):
+        self.n_qubits = n_qubits
         self._dims_input = dims_input
-        self._dims_output = dims_output
         self.circuit_constructor = circuit_constructor
         super().__init__()
 
@@ -92,7 +217,7 @@ class CircuitAnsatz(Ansatz):
 
     @property
     def dims_output(self):
-        return self._dims_output
+        return (2 ** self.n_qubits) ** 2 * 2
 
 
     def forward(self, input, **kwargs):
@@ -104,19 +229,19 @@ class CircuitAnsatz(Ansatz):
 
 class XZRot_1Q(CircuitAnsatz):
     def __init__(self):
-        super().__init__(2, 8, c.xz_rot_1q)
+        super().__init__(1, 2, c.xz_rot_1q)
 
 
 class U3Gate_3Q(CircuitAnsatz):
     def __init__(self):
-        super().__init__(9, 128, c.u3_gate_3q)
+        super().__init__(3, 9, c.u3_gate_3q)
 
 
 class SU2_3Q(CircuitAnsatz):
     def __init__(self, n_reps):
         self.n_reps = n_reps
         super().__init__(
-            6 * (self.n_reps + 1), 128,
+            3, 6 * (self.n_reps + 1),
             lambda input: c.su2_3q(input, self.n_reps)
         )
 
@@ -125,12 +250,12 @@ class QGAN_3Q(CircuitAnsatz):
     def __init__(self, n_reps):
         self.n_reps = n_reps
         super().__init__(
-            3 * (self.n_reps + 1), 128,
+            3, 3 * (self.n_reps + 1),
             lambda input: c.qgan_3q(input, self.n_reps)
         )
 
 
-class Squander(Ansatz):
+class SquanderDecompose(Ansatz):
     def __init__(
         self, n_qubits,
         n_layers_dict=s.default_n_layers_dict,
@@ -205,3 +330,12 @@ class Squander(Ansatz):
                 return err_ret
         else:
             return output
+
+
+class SquanderReconstruct(CircuitAnsatz):
+    def __init__(self, n_qubits, n_layers_dict=s.default_n_layers_dict):
+        self.n_layers_dict = s.default_n_layers_dict | n_layers_dict
+        super().__init__(
+            n_qubits, s.n_params(n_qubits, self.n_layers_dict),
+            lambda input: c.squander(input, n_qubits, self.n_layers_dict)
+        )

@@ -142,7 +142,12 @@ def _insert_barriers(circuit):
     n_qubits = len(circuit.qubits)
     _, last_cx_pos_dict = _get_last_op_pos(circuit)
 
-    n_barriers = 0
+    circuit.data.insert(
+        n_qubits,
+        (Barrier(n_qubits), circuit.qubits, [])
+    )
+    n_barriers = 1
+
     for q0 in range(n_qubits - 1):
         q1 = q0 + 1
         if (q0, q1) in last_cx_pos_dict:

@@ -1,6 +1,8 @@
 from qiskit import QuantumCircuit
 from qiskit.circuit.library import EfficientSU2
 
+import nusynth.squander as s
+
 
 def xz_rot_1q(input):
     theta, phi = input
@@ -48,5 +50,40 @@ def qgan_3q(input, n_reps):
     qc.ry(input[pad], 0)
     qc.ry(input[pad + 1], 1)
     qc.ry(input[pad + 2], 2)
+
+    return qc
+
+
+def squander(input, n_qubits, n_layers_dict=s.default_n_layers_dict):
+    n_layers_dict = s.default_n_layers_dict | n_layers_dict
+    n_params = s.n_params(n_qubits, n_layers_dict)
+    assert len(input) == n_params
+
+    u_gen = (input[i:i + 3] for i in range(0, len(input), 3))
+    nu = lambda: next(u_gen)
+    qc = QuantumCircuit(n_qubits)
+
+    # initial rotations
+    for q in range(n_qubits):
+        qc.u(*nu(), q) # type: ignore
+    qc.barrier()
+
+    # layers
+    for qn in range(n_qubits, 1, -1):
+        n_groups = n_layers_dict[qn] // (qn - 1)
+        for _ in range(n_groups):
+            ctrl = qn - 1
+            for targ in range(ctrl):
+                qc.cnot(ctrl, targ)
+                qc.u(*nu(), targ) # type: ignore
+                qc.u(*nu(), ctrl) # type: ignore
+        qc.barrier()
+
+    # check params exhausted
+    try:
+        nu()
+        raise RuntimeError('Input parameters not exhausted')
+    except StopIteration:
+        pass
 
     return qc
