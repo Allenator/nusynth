@@ -33,25 +33,34 @@ def cross_product(x, y):
     return cross_product
 
 
-def random_unitary(n_qubits):
-    return unitary_group.rvs(2 ** n_qubits)
+def random_unitary(n_qubits, size=1, as_vec=False):
+    u = unitary_group.rvs(2 ** n_qubits, size=size)
+
+    if as_vec:
+        return unitary_to_vec(u)
+    else:
+        return u
 
 
 def unitary_to_vec(unitary):
-    assert unitary.shape[0] == unitary.shape[1]
-    unitary = unitary.flatten()
+    s = unitary.shape
+    assert s[-1] == s[-2]
 
-    return np.concatenate((np.real(unitary), np.imag(unitary)))
+    unitary = unitary.reshape(-1, s[-1] * s[-2]).squeeze()
+
+    return np.concatenate((unitary.real, unitary.imag), axis=-1)
 
 
 def vec_to_unitary(vec):
-    dim = int(math.sqrt(len(vec) / 2))
-    assert dim ** 2 * 2 == len(vec)
+    s = vec.shape
+    n_c = int(s[-1] / 2)
+    dim = int(math.sqrt(n_c))
+    assert dim ** 2 == n_c
 
-    vec = vec.reshape((2, -1))
-    unitary = np.apply_along_axis(lambda args: [complex(*args)], 0, vec)
+    vec = vec.reshape(-1, 2, n_c)
+    unitary = np.apply_along_axis(lambda args: [complex(*args)], -2, vec)
 
-    return unitary.reshape((dim, dim))
+    return unitary.reshape(-1, dim, dim).squeeze()
 
 
 def circuit_to_unitary(circuit):
